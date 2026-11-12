@@ -1,7 +1,5 @@
 # dsh-plugin-loomy
 
-> 仓库：<https://github.com/Sladewww/dsh-plugin-loomy> · 标签：`dsh-plugin` `dsh-plugins` `dsh-plugin-market` · 许可：MIT
-
 把 [loomy2api](https://github.com/Patrick130306/loomy2api)（MIT）改造为一个带**左侧栏入口**的 DSH 插件：
 
 - **添加模型到 DSH**：从网关 `/v1/models` 拉目录，按启用清单写进 `@deepseek-ai/dsh-llm-pi-ai` 的自定义路由，模型出现在输入框的模型选择器里。
