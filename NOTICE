@@ -1,0 +1,19 @@
+Third-party notices for dsh-plugin-loomy
+========================================
+
+This repository bundles the Python sources of `loomy2api`
+(https://github.com/Patrick130306/loomy2api) under `gateway/loomy2api/`.
+
+Those sources are distributed under the MIT License, Copyright (c) 2026
+loomy2api contributors. The original license text is retained verbatim in
+`LICENSES/loomy2api-LICENSE` and is incorporated here by reference.
+
+The bundled sources are unmodified except for the addition of
+`gateway/dsh_serve.py`, a startup wrapper that redirects config.json,
+accounts.json and logs to a user data directory. That wrapper, along with
+the Host/Client plugin code and documentation in this repository, is
+Copyright (c) 2026 Sladewww and licensed under the MIT License in LICENSE.
+
+This project is unaffiliated with iFlytek / Loomy. It exists for
+interoperability and personal use with your own account. Do not use it to
+abuse, resell or overload the upstream service.

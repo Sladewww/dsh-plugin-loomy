@@ -104,6 +104,6 @@ placeholder、自动填充、数字输入箭头、焦点环与 `select option`�
 ## 上游与许可
 
 - 本项目（Host / Client / 启动包装 / 文档）：MIT，见 [LICENSE](LICENSE)，Copyright (c) 2026 Sladewww。
-- 内置 `gateway/loomy2api/` 源码来自 [Patrick130306/loomy2api](https://github.com/Patrick130306/loomy2api)，同样为 MIT；其原始许可文本逐字保留在 [LICENSES/loomy2api-LICENSE](LICENSES/loomy2api-LICENSE)。未改动上游 Python 逻辑，只增加了 `gateway/dsh_serve.py` 启动包装，把 `config.json` / `accounts.json` / 日志重定向到用户数据目录，避免写进插件包。
+- 内置 `gateway/loomy2api/` 源码来自 [Patrick130306/loomy2api](https://github.com/Patrick130306/loomy2api)，同样为 MIT；其原始许可文本逐字保留在 [LICENSES/loomy2api-LICENSE](LICENSES/loomy2api-LICENSE)，第三方声明见 [NOTICE](NOTICE)。未改动上游 Python 逻辑，只增加了 `gateway/dsh_serve.py` 启动包装，把 `config.json` / `accounts.json` / 日志重定向到用户数据目录，避免写进插件包。
 
 本插件与科大讯飞 / Loomy 无关联，仅供自有账号的互操作使用。请勿用于滥用、转售或压测上游服务。

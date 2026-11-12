@@ -39,6 +39,7 @@
     "gateway/**/*",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "LICENSES/*"
   ],
   "dsh": {

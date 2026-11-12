@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party notice: this repository bundles the Python sources of
-`loomy2api` (https://github.com/Patrick130306/loomy2api) under
-`gateway/loomy2api/`, distributed under the MIT License. Its original
-license text is retained verbatim in `LICENSES/loomy2api-LICENSE`.
