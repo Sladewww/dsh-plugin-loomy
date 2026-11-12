@@ -1,5 +1,7 @@
 # dsh-plugin-loomy
 
+> 仓库：<https://github.com/Sladewww/dsh-plugin-loomy> · 标签：`dsh-plugin` `dsh-plugins` `dsh-plugin-market` · 许可：MIT
+
 把 [loomy2api](https://github.com/Patrick130306/loomy2api)（MIT）改造为一个带**左侧栏入口**的 DSH 插件：
 
 - **添加模型到 DSH**：从网关 `/v1/models` 拉目录，按启用清单写进 `@deepseek-ai/dsh-llm-pi-ai` 的自定义路由，模型出现在输入框的模型选择器里。
@@ -39,7 +41,9 @@
 
 ## 网关生命周期
 
-`configEditor.edit` 会重启本插件，因此网关进程**不能**挂在 `ctx.effect` 的 cleanup 上（否则切个开关就断服务）。实现改为「存活即接管」：新 fiber 启动探测 `/health`，已有网关就认领（`adopted`），没有且 `autoStart` 为真才 spawn。显式「停止」按钮仍会 kill（含接管来的进程，按端口查 PID）。
+- **重启后自动启动**：`autoStart` 默认为 `true`。插件启用时探测 `/health`，已有 loomy2api 就认领（`adopted`），否则直接 spawn 新进程。可在面板「设置」里关掉；设置保存在 `~/.dsh/loomy/state.json`，不存在时按默认 `true` 生效。
+- **HTTP 路由重试注册**：`webServer` 由 `@deepseek-ai/dsh-host-webserver` 提供，本插件 fiber 可能**先于**它激活（DSH 重启后加载顺序不保证）。一次性 `ctx.get('webServer')` 会拿到 `undefined` 且不再重试，导致面板所有接口 404。实现改为 500ms 间隔、最多 15 秒的有限重试，服务就绪即注册；`ctx.effect` 在卸载时清理定时器与路由。
+- `configEditor.edit` 会重启本插件，因此网关进程**不能**挂在 effect cleanup 上（否则切个开关就断服务）。故采用「存活即接管」而非 cleanup 杀进程。显式「停止」按钮仍会 kill（含接管来的进程，按端口查 PID）。
 
 ## 外观
 
@@ -97,6 +101,8 @@
 | 同步模型报「pi-ai 条目不可编辑」 | 检查「设置」里的诊断信息，确认 `llm-pi-ai` 在 configEditor.entries() 里 |
 | 模型目录为空 | 确认账号池至少有一个可用账号；无账号时上游会返回内置兜底清单 |
 | 切开关后网关断了 | 本版本已修（存活即接管）；若仍遇到，点「启动」会接管现有进程 |
+| **重启 DSH 后面板接口 404** | 旧版本一次性取 `webServer`，启动顺序晚到就永久不注册；本版本已改为有限重试。若仍 404，看「设置 → 诊断」，或 `set_plugin` 关→开一次 |
+| 重启后网关没起来 | 确认 `autoStart` 为 `true`（默认）；`state.json` 里若曾被设为 `false` 会尊重该值 |
 
 ## 上游与许可
 

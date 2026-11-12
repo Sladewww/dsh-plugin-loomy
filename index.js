@@ -37,7 +37,9 @@ const DEFAULTS = {
   strategy: 'balance',
   defaultModel: 'deepseek-v4-flash-0731',
   providerRoute: 'loomy',
-  autoStart: false,
+  // 插件启用即自动拉起/接管网关（用户明确要求「重启后总是自动启动」）。
+  // 可在面板「设置」里关掉；state.json 不存在时也按此默认值生效。
+  autoStart: true,
 };
 
 // ---------------------------------------------------------------- utilities
@@ -627,46 +629,75 @@ export function apply(ctx, config) {
     }
   }
 
-  // 注册 HTTP 路由（node:http 风格 handler）。用 ctx.effect 显式拥有生命周期：
-  // 只靠 apply 返回的 cleanup，在 disable/enable 往返里可能不被调用，导致旧路由
-  // 残留、重新激活时 webServer 报 duplicate prefix route。
-  const webServer = ctx.get('webServer');
-  if (webServer) {
-    const route = {
-      kind: 'prefix',
-      path: ROUTE_PREFIX,
-      handler: async (req, res) => {
-        try {
-          if (!isLoopbackOrigin(req.headers.origin)) {
-            json(res, 403, { ok: false, message: '拒绝跨站请求' });
-            return;
-          }
-          const url = new URL(req.url || '/', 'http://dsh.internal');
-          const path = url.pathname.slice(ROUTE_PREFIX.length).replace(/^\/+/, '') || 'status';
-          const method = (req.method || 'GET').toUpperCase();
-          let body = {};
-          if (method === 'POST') {
-            try { body = await readJsonBody(req); }
-            catch (err) { json(res, 400, { ok: false, message: `请求体解析失败：${err.message}` }); return; }
-          }
-          const result = await dispatch(method, path, url.searchParams, body);
-          json(res, result.ok === false ? 400 : 200, result);
-        } catch (err) {
-          json(res, 500, { ok: false, message: `内部错误：${err && err.message ? err.message : err}` });
+  // 注册 HTTP 路由（node:http 风格 handler）。
+  //
+  // 重要：webServer 由 @deepseek-ai/dsh-host-webserver 提供，本插件的 fiber
+  // 可能**先于**它激活（DSH 重启后加载顺序不保证）。一次性 ctx.get('webServer')
+  // 会拿到 undefined，且之后不再重试 → 路由永远不注册，面板全部 404。
+  // 因此这里做「延迟 + 有限重试」，直到服务可用；用 ctx.effect 拥有生命周期，
+  // 卸载/重配置时清理定时器与已注册的路由。
+  const route = {
+    kind: 'prefix',
+    path: ROUTE_PREFIX,
+    handler: async (req, res) => {
+      try {
+        if (!isLoopbackOrigin(req.headers.origin)) {
+          json(res, 403, { ok: false, message: '拒绝跨站请求' });
+          return;
         }
-      },
-    };
-    ctx.effect(() => {
-      let dispose = () => {};
-      try { dispose = webServer.register(route); }
-      catch (err) {
-        // 旧实例残留时 register 会抛 duplicate；吞掉并记进状态，让面板显示。
-        lastError = `路由注册失败（可能有旧实例残留）：${err && err.message ? err.message : err}`;
-        return () => {};
+        const url = new URL(req.url || '/', 'http://dsh.internal');
+        const path = url.pathname.slice(ROUTE_PREFIX.length).replace(/^\/+/, '') || 'status';
+        const method = (req.method || 'GET').toUpperCase();
+        let body = {};
+        if (method === 'POST') {
+          try { body = await readJsonBody(req); }
+          catch (err) { json(res, 400, { ok: false, message: `请求体解析失败：${err.message}` }); return; }
+        }
+        const result = await dispatch(method, path, url.searchParams, body);
+        json(res, result.ok === false ? 400 : 200, result);
+      } catch (err) {
+        json(res, 500, { ok: false, message: `内部错误：${err && err.message ? err.message : err}` });
       }
-      return () => { try { dispose(); } catch { /* ignore */ } };
-    }, 'loomy: HTTP route');
-  }
+    },
+  };
+
+  let routeDispose = null;
+  let retryTimer = null;
+  let retries = 0;
+  const MAX_ROUTE_RETRIES = 30; // 30 × 500ms = 15s，足够 webServer 就绪
+
+  const tryRegister = () => {
+    if (routeDispose) return true;
+    const webServer = ctx.get('webServer');
+    if (!webServer) return false;
+    try {
+      routeDispose = webServer.register(route);
+      lastError = '';
+      return true;
+    } catch (err) {
+      // duplicate：已有实例注册过（HMR 竞态），视为成功，不重复注册。
+      if (/duplicate/i.test(String(err && err.message))) return true;
+      lastError = `路由注册失败：${err && err.message ? err.message : err}`;
+      return false;
+    }
+  };
+
+  ctx.effect(() => {
+    if (!tryRegister()) {
+      retryTimer = setInterval(() => {
+        retries += 1;
+        if (tryRegister() || retries >= MAX_ROUTE_RETRIES) {
+          clearInterval(retryTimer);
+          retryTimer = null;
+          if (!routeDispose) lastError = 'webServer 在 15 秒内未就绪，插件 HTTP 路由未注册（面板接口会 404）。请重启 DSH 或稍后重试。';
+        }
+      }, 500);
+    }
+    return () => {
+      if (retryTimer) { clearInterval(retryTimer); retryTimer = null; }
+      if (routeDispose) { try { routeDispose(); } catch { /* ignore */ } routeDispose = null; }
+    };
+  }, 'loomy: HTTP route (retry until webServer ready)');
 
   // 网关进程**不**挂在 effect cleanup 上：configEditor.edit 会重启本插件
   // （写 enabledModels / pi-ai 配置时都会），cleanup 一跑就把网关杀了，
