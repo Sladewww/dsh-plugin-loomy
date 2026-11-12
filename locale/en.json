@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "title": "Loomy gateway",
+    "description": "Run a local Loomy-to-OpenAI gateway, add its models to DSH, and manage the account pool from a sidebar panel."
+  },
+  "panel": {
+    "title": "Loomy gateway",
+    "subtitle": "Local OpenAI/Anthropic-compatible gateway · account pool · DSH model sync",
+    "service": "Service",
+    "models": "Models",
+    "accounts": "Account pool",
+    "settings": "Settings",
+    "start": "Start",
+    "stop": "Stop",
+    "refresh": "Refresh",
+    "sync": "Sync models to DSH",
+    "syncing": "Syncing…",
+    "running": "Running",
+    "stopped": "Stopped",
+    "test": "Test chat",
+    "addAccount": "Add account",
+    "save": "Save",
+    "cancel": "Cancel"
+  }
+}

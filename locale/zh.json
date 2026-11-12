@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "title": "Loomy 网关",
+    "description": "在本机运行 Loomy 转 OpenAI 兼容网关，把它的模型添加为 DSH 可选模型，并在左侧栏面板里管理账号池。"
+  },
+  "panel": {
+    "title": "Loomy 网关",
+    "subtitle": "本机 OpenAI / Anthropic 兼容网关 · 账号池 · DSH 模型同步",
+    "service": "服务",
+    "models": "模型",
+    "accounts": "账号池",
+    "settings": "设置",
+    "start": "启动",
+    "stop": "停止",
+    "refresh": "刷新",
+    "sync": "同步模型到 DSH",
+    "syncing": "同步中…",
+    "running": "运行中",
+    "stopped": "已停止",
+    "test": "测试对话",
+    "addAccount": "添加账号",
+    "save": "保存",
+    "cancel": "取消"
+  }
+}

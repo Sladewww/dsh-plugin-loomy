@@ -1,0 +1,58 @@
+{
+  "name": "dsh-plugin-loomy",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Loomy 网关：把 loomy2api 的模型同步为 DSH 可选模型，并在左侧栏面板里管理账号池。",
+  "license": "MIT",
+  "author": "Sladewww",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sladewww/dsh-plugin-loomy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sladewww/dsh-plugin-loomy/issues"
+  },
+  "homepage": "https://github.com/Sladewww/dsh-plugin-loomy#readme",
+  "keywords": [
+    "dsh-plugin",
+    "dsh-plugins",
+    "dsh-plugin-market",
+    "deepseek-harness",
+    "loomy",
+    "loomy2api",
+    "openai-compatible",
+    "account-pool"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "gateway/**/*",
+    "README.md",
+    "LICENSE",
+    "LICENSES/*"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0"
+  }
+}

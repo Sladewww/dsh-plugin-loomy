@@ -1,0 +1,5 @@
+- insert:
+    - id: loomy-gateway
+      name: 'dsh-plugin-loomy'
+      config:
+        enabledModels: []
