@@ -15,46 +15,47 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'loomy-gateway';
     const API = '/__loomy/v2/api';
 
-    // ------------------------------------------------------------ 暗色主题
-    // 面板固定为暗色：不引用 --dsw-alias-* 文字色，因为宿主切到浅色时那些
-    // token 会变成深字，叠在深底上会看不见。这里整套配色自洽，明暗宿主下
-    // 都保持一致；只有图标与少量强调色沿用宿主品牌色。
+    // ------------------------------------------------------------ 主题
+    // 全部颜色走宿主的 --dsw-alias-* token（Theme.listTokens 报告这些 token
+    // requiresLightAndDark=true，宿主切换明暗时会自动换值）。不写固定深/浅色，
+    // 面板因此跟随宿主主题；color-scheme 保持 inherit，原生控件也跟着走。
+    const v = (name, fallback) => `var(${name}, ${fallback})`;
     const C = {
-      base: '#0f1115',        // 面板最底层背景
-      panel: '#171a21',       // 卡片背景
-      raised: '#1e222b',      // 输入框 / 代码块 / 悬浮层
-      hover: '#252a35',       // 按钮 hover
-      primary: '#e6e8ee',     // 主文字
-      secondary: '#a7adba',   // 次文字
-      tertiary: '#767e8e',    // 提示 / 表头
-      border: '#2b303b',      // 描边
-      borderStrong: '#3a4150',
-      danger: '#f07178',
-      ok: '#7ec699',
-      warn: '#e5c07b',
-      brand: 'var(--dsw-alias-interactive-primary, #6ea8fe)',
-      onBrand: '#0f1115',
+      base: v('--dsw-alias-bg-base', 'transparent'),
+      panel: v('--dsw-alias-bg-layer-1', 'transparent'),
+      raised: v('--dsw-alias-bg-layer-2', 'transparent'),
+      hover: v('--dsw-alias-bg-overlay', 'transparent'),
+      primary: v('--dsw-alias-label-primary', 'inherit'),
+      secondary: v('--dsw-alias-label-secondary', 'inherit'),
+      tertiary: v('--dsw-alias-state-idle-primary', 'inherit'),
+      border: v('--dsw-alias-border-l1', 'currentColor'),
+      borderStrong: v('--dsw-alias-border-l2', 'currentColor'),
+      danger: v('--dsw-alias-state-error-primary', 'inherit'),
+      ok: v('--dsw-alias-state-success-primary', 'inherit'),
+      warn: v('--dsw-alias-state-warn-primary', 'inherit'),
+      brand: v('--dsw-alias-brand-primary', 'currentColor'),
+      onBrand: v('--dsw-alias-bg-base', 'inherit'),
     };
     const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
-    // 组件级暗色样式：原生控件（滚动条 / placeholder / 颜色选择器 / 自动填充）
-    // 单独注入，随面板挂载而生效、卸载而移除。
-    const DARK_CSS = [
-      '[data-loomy-panel]{color-scheme:dark;scrollbar-color:#3a4150 transparent;scrollbar-width:thin}',
-      '[data-loomy-panel],[data-loomy-panel] *{scrollbar-color:#3a4150 transparent;scrollbar-width:thin}',
+    // 组件级样式：只处理原生控件无法用内联样式表达的部分（滚动条 /
+    // placeholder / 自动填充 / select option / 焦点环）。颜色一律用 token，
+    // 不强制 color-scheme，随宿主明暗切换。随面板挂载而生效、卸载而移除。
+    const PANEL_CSS = [
+      '[data-loomy-panel],[data-loomy-panel] *{scrollbar-color:var(--dsw-alias-border-l2,currentColor) transparent;scrollbar-width:thin}',
       '[data-loomy-panel] *::-webkit-scrollbar{width:9px;height:9px}',
-      '[data-loomy-panel] *::-webkit-scrollbar-thumb{background:#3a4150;border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
+      '[data-loomy-panel] *::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2,currentColor);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
       '[data-loomy-panel] *::-webkit-scrollbar-track{background:transparent}',
-      '[data-loomy-panel] input::placeholder,[data-loomy-panel] textarea::placeholder{color:#767e8e;opacity:1}',
+      '[data-loomy-panel] input::placeholder,[data-loomy-panel] textarea::placeholder{color:var(--dsw-alias-state-idle-primary,currentColor);opacity:1}',
       '[data-loomy-panel] input::-webkit-outer-spin-button,[data-loomy-panel] input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}',
       '[data-loomy-panel] input[type=number]{-moz-appearance:textfield;appearance:textfield}',
       '[data-loomy-panel] input:-webkit-autofill,',
       '[data-loomy-panel] input:-webkit-autofill:hover,',
-      '[data-loomy-panel] input:-webkit-autofill:focus{-webkit-text-fill-color:#e6e8ee;box-shadow:0 0 0 1000px #1e222b inset;caret-color:#e6e8ee}',
-      '[data-loomy-panel] select option{background:#1e222b;color:#e6e8ee}',
+      '[data-loomy-panel] input:-webkit-autofill:focus{-webkit-text-fill-color:var(--dsw-alias-label-primary,inherit);box-shadow:0 0 0 1000px var(--dsw-alias-bg-layer-2,transparent) inset;caret-color:var(--dsw-alias-label-primary,inherit)}',
+      '[data-loomy-panel] select option{background:var(--dsw-alias-bg-layer-2,transparent);color:var(--dsw-alias-label-primary,inherit)}',
       '[data-loomy-panel] button:focus-visible,',
       '[data-loomy-panel] input:focus-visible,',
-      '[data-loomy-panel] select:focus-visible{outline:2px solid #6ea8fe;outline-offset:1px}',
+      '[data-loomy-panel] select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,currentColor);outline-offset:1px}',
     ].join('\n');
 
     const S = {
@@ -511,14 +512,14 @@ window.__ModuleLoader__.load({
 
     // ------------------------------------------------------------------ apply
     function apply(ctx) {
-      // 组件级暗色样式：styles.insert 由 Client 运行时提供，返回移除函数。
-      // 用 try 包住，缺该能力时也不影响面板主体（内联样式已自带暗色）。
+      // 组件级样式：styles.insert 由 Client 运行时提供，返回移除函数。
+      // 用 try 包住，缺该能力时也不影响面板主体（内联样式已全部走主题 token）。
       try {
         if (typeof styles !== 'undefined' && styles && typeof styles.insert === 'function') {
-          const removeDark = styles.insert(DARK_CSS);
-          ctx.effect(() => removeDark, 'loomy: dark theme');
+          const removeCss = styles.insert(PANEL_CSS);
+          ctx.effect(() => removeCss, 'loomy: theme-aware panel css');
         }
-      } catch (e) { console.warn('[loomy] 暗色样式注入失败：', e); }
+      } catch (e) { console.warn('[loomy] 组件样式注入失败：', e); }
 
       // 声明期安全注册：槽位未声明时 inject 会等声明提交后再执行。
       try {

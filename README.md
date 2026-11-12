@@ -6,14 +6,14 @@
 - **逐个模型启用开关**：面板里每行一个 `role="switch"` 开关，也可「全部启用 / 全部停用」。启用清单持久化在**本插件的 Config**（profile 的 `cordis.patch.yml`），用户不需要去「设置 → 模型」手动改。
 - **设置账号池**：增删账号、启停、强制续期、查看额度、切换路由策略。
 - **内置网关**：Python 源码随插件打包，Host 自动按需启动/停止，无需手工部署。
-- **固定暗色主题**，不随宿主明暗切换。
+- **跟随宿主明暗主题**：全部颜色走 `--dsw-alias-*` token，亮色/暗色宿主下自动适配。
 
 ## 组成
 
 | 文件 | 作用 |
 |---|---|
 | `index.js` | Host 半侧：Config、Python 子进程、`/__loomy/v2/api/*` HTTP 路由、模型启用同步 |
-| `client.js` | Client 半侧：`sidebar.panellist` 图标 + `main` 主面板（React，暗色） |
+| `client.js` | Client 半侧：`sidebar.panellist` 图标 + `main` 主面板（React，主题自适应） |
 | `gateway/` | 内置 loomy2api 纯 Python 源码 + `dsh_serve.py` 启动包装 |
 | `cordis.patch.yml` | bundle 的 insert 行（默认 `enabledModels: []`） |
 | `locale/`, `icon.svg` | 显示元数据 |
@@ -43,10 +43,9 @@
 
 ## 外观
 
-面板使用**固定暗色主题**（`#0f1115` 底层 / `#171a21` 卡片 / `#1e222b` 输入控件），
-不随宿主明暗切换——因为宿主浅色时的文字 token 是深色，叠在深底上会看不见。
-组件级 CSS 通过 `styles.insert` 注入（`data-loomy-panel` 作用域），处理滚动条、
-placeholder、自动填充、数字输入箭头、焦点环与 `select option`，随插件卸载自动移除。
+面板**跟随宿主明暗主题**：所有颜色都走宿主的 `--dsw-alias-*` token（`bg-base` / `bg-layer-1` / `bg-layer-2` / `label-primary` / `label-secondary` / `border-l1/l2` / `brand-primary` / 状态色等）。这些 token 在宿主切换明暗时自动换值，插件不写任何固定深/浅色，也不强制 `color-scheme`，因此亮色宿主下是亮色面板、暗色宿主下是暗色面板，原生控件（滚动条、placeholder、自动填充、`select option`）也一并跟随。
+
+组件级 CSS 仅用于处理内联样式表达不了的原生控件细节，通过 `styles.insert` 注入（`data-loomy-panel` 作用域），同样只用 token，随插件卸载自动移除。
 
 ## 数据流
 
