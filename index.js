@@ -16,7 +16,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -40,6 +40,8 @@ const DEFAULTS = {
   // 插件启用即自动拉起/接管网关（用户明确要求「重启后总是自动启动」）。
   // 可在面板「设置」里关掉；state.json 不存在时也按此默认值生效。
   autoStart: true,
+  // 桌面客户端登录态扫描根目录；空 = C:\Users\Public\Loomy
+  clientRoot: '',
 };
 
 // ---------------------------------------------------------------- utilities
@@ -169,6 +171,75 @@ async function readJsonBody(req) {
   return parsed;
 }
 
+// ------------------------------------------------ 桌面客户端登录态扫描
+// 上游 pool.py 会 glob <root>/*/userData/auth-session.json 自动导入，但那些是
+// 派生的临时账号（persist=False，不写回 accounts.json）。这里提供主动扫描 +
+// 一键把选中项持久化为可管理账号的能力。
+
+const CLIENT_ROOT_DEFAULT = 'C:\\Users\\Public\\Loomy';
+const SESSION_SECONDS = 14 * 24 * 3600;
+
+function maskPhone(v) {
+  const s = String(v || '');
+  const d = s.replace(/\D/g, '');
+  return d.length >= 7 ? `${d.slice(0, 3)}****${d.slice(-4)}` : (s || '—');
+}
+
+function maskSession(v) {
+  const s = String(v || '');
+  return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : (s ? '••••' : '—');
+}
+
+/**
+ * 扫描客户端登录态。返回脱敏摘要；完整 session 只留在 Host 内存的
+ * scanCache 里，通过 token 索引，绝不发给浏览器。
+ */
+function scanClientSessions(root) {
+  const base = String(root || CLIENT_ROOT_DEFAULT);
+  const found = [];
+  const errors = [];
+  let entries = [];
+  try { entries = readdirSync(base, { withFileTypes: true }); }
+  catch (err) {
+    return { ok: true, data: { root: base, items: [], errors: [`无法读取扫描目录：${err.message}`] } };
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const file = join(base, ent.name, 'userData', 'auth-session.json');
+    try {
+      // 客户端根目录下可能混有 .migration 等非客户端目录；没有该文件就静默跳过。
+      let st;
+      try { st = statSync(file); } catch { continue; }
+      if (!st.isFile()) continue;
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      const session = String(data.session || '');
+      if (!session) { errors.push(`${ent.name}: 文件里没有 session`); continue; }
+      const updatedMs = Number(data.updatedAt || 0);
+      const obtainedSec = updatedMs ? Math.floor(updatedMs / 1000) : 0;
+      const expireSec = obtainedSec ? obtainedSec + SESSION_SECONDS : 0;
+      const daysLeft = expireSec ? Math.max(0, Math.floor((expireSec * 1000 - Date.now()) / 86400000)) : null;
+      found.push({
+        token: `${ent.name}:${session.slice(0, 8)}`,
+        dir: ent.name,
+        path: file,
+        phone: String(data.phone || ''),
+        phoneMasked: maskPhone(data.phone),
+        userid: String(data.userid || ''),
+        sessionMasked: maskSession(session),
+        updatedAt: updatedMs,
+        daysLeft,
+        expired: daysLeft !== null && daysLeft <= 0,
+        // 完整值只放缓存，不进返回体
+        _session: session,
+        _name: `client-${String(data.phone || ent.name).slice(-4)}`,
+      });
+    } catch (err) {
+      errors.push(`${ent.name}: ${err.message}`);
+    }
+  }
+  return { ok: true, data: { root: base, items: found, errors } };
+}
+
 // ------------------------------------------------------------------- plugin
 
 /**
@@ -184,6 +255,9 @@ export function apply(ctx, config) {
   let lastError = '';
   let startedAt = 0;
   let tail = [];
+  // 客户端登录态扫描缓存：token -> 完整 session。只留在 Host 内存，
+  // 绝不跟随扫描结果返回浏览器；导入时凭 token 回查。
+  let scanCache = new Map();
 
   const pushTail = (line) => {
     const text = String(line).replace(/\s+$/, '');
@@ -559,7 +633,7 @@ export function apply(ctx, config) {
       }
       case 'GET config': {
         const s = state();
-        return { ok: true, data: { port: s.port, pythonPath: s.pythonPath, strategy: s.strategy, defaultModel: s.defaultModel, providerRoute: s.providerRoute, autoStart: !!s.autoStart, dataDir: dataDir() } };
+        return { ok: true, data: { port: s.port, pythonPath: s.pythonPath, strategy: s.strategy, defaultModel: s.defaultModel, providerRoute: s.providerRoute, autoStart: !!s.autoStart, clientRoot: s.clientRoot || '', dataDir: dataDir() } };
       }
       case 'POST config': {
         const s = state();
@@ -577,6 +651,7 @@ export function apply(ctx, config) {
         if (body.defaultModel !== undefined) next.defaultModel = String(body.defaultModel || DEFAULTS.defaultModel);
         if (body.providerRoute !== undefined) next.providerRoute = String(body.providerRoute || 'loomy').replace(/[^a-zA-Z0-9_-]/g, '-');
         if (body.autoStart !== undefined) next.autoStart = !!body.autoStart;
+        if (body.clientRoot !== undefined) next.clientRoot = String(body.clientRoot || '');
         writeState(next);
         const wasRunning = (!!child && child.exitCode === null) || adopted;
         if (wasRunning && (next.port !== s.port || next.strategy !== s.strategy || next.pythonPath !== s.pythonPath)) {
@@ -608,6 +683,75 @@ export function apply(ctx, config) {
       }
       case 'POST refresh': return gwFetch('POST', '/api/panel/refresh', {}, 30000);
       case 'GET logs': return gwFetch('GET', `/api/panel/logs?lines=${Math.max(10, Math.min(Number(query.get('lines')) || 200, 2000))}`, undefined, 10000);
+      case 'GET clientScan': {
+        const scan = scanClientSessions(query.get('root') || state().clientRoot || '');
+        if (!scan.ok) return scan;
+        // 客户端只保留「最后登录」的那一个账号，登录另一个会覆盖 auth-session.json。
+        // 这里读 accounts.json 的真实 session，把已导入池的项标出来，避免用户
+        // 重复导入或误以为另一个账号还在。已持久化的账号不会因覆盖而丢失。
+        let knownSessions = new Set();
+        try {
+          const raw = JSON.parse(readFileSync(join(dataDir(), 'accounts.json'), 'utf8'));
+          for (const a of (Array.isArray(raw.accounts) ? raw.accounts : [])) {
+            if (a && a.session) knownSessions.add(String(a.session));
+          }
+        } catch { /* 账号文件不存在/损坏时按「都未导入」处理 */ }
+        // 刷新缓存，并返回脱敏后的摘要（去掉 _session / _name）
+        scanCache = new Map();
+        const items = scan.data.items.map((it) => {
+          scanCache.set(it.token, { session: it._session, name: it._name, phone: it.phone });
+          const { _session, _name, ...safe } = it;
+          return { ...safe, alreadyImported: knownSessions.has(it._session) };
+        });
+        return { ok: true, data: { ...scan.data, items } };
+      }
+      case 'POST clientImport': {
+        const tokens = Array.isArray(body.tokens) ? body.tokens.map(String) : [];
+        if (!tokens.length) return { ok: false, message: '没有选中任何客户端登录态' };
+        // panel/state 的 account view 里 session 是脱敏的（public_dict 只给前 8 位），
+        // 不能用来判重。直接读 accounts.json 拿真实值最可靠。
+        let existingNames = new Set();
+        let existingSessions = new Set();
+        try {
+          const raw = JSON.parse(readFileSync(join(dataDir(), 'accounts.json'), 'utf8'));
+          const list = Array.isArray(raw.accounts) ? raw.accounts : [];
+          for (const a of list) {
+            if (a && a.name) existingNames.add(String(a.name));
+            if (a && a.session) existingSessions.add(String(a.session));
+          }
+        } catch (err) {
+          return { ok: false, message: `读取 accounts.json 失败：${err.message}` };
+        }
+        const imported = [];
+        const skipped = [];
+        const failed = [];
+        for (const token of tokens) {
+          const entry = scanCache.get(token);
+          if (!entry) { skipped.push({ token, reason: '缓存已失效，请重新扫描' }); continue; }
+          if (existingSessions.has(entry.session)) { skipped.push({ token, reason: '该 session 已在账号池中' }); continue; }
+          let name = entry.name;
+          let n = 1;
+          while (existingNames.has(name)) { name = `${entry.name}-${n}`; n += 1; }
+          const res = await gwFetch('POST', '/api/panel/accounts', {
+            name,
+            loginid: entry.phone || '',
+            password: '',
+            session: entry.session,
+            login: false,
+          }, 30000);
+          if (!res.ok) { failed.push({ token, name, reason: res.message }); continue; }
+          existingNames.add(name);
+          existingSessions.add(entry.session);
+          imported.push({ token, name });
+        }
+        return {
+          ok: true,
+          data: {
+            imported, skipped, failed,
+            message: `导入 ${imported.length} 个账号${skipped.length ? `，跳过 ${skipped.length} 个` : ''}${failed.length ? `，失败 ${failed.length} 个` : ''}。`,
+          },
+        };
+      }
       case 'POST account': {
         const action = String(body.action || '');
         const target = PANEL_ACTIONS[action];

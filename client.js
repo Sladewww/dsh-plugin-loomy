@@ -184,6 +184,10 @@ window.__ModuleLoader__.load({
       const [testResult, setTestResult] = React.useState('');
       const [cfgDraft, setCfgDraft] = React.useState(null);
       const [addDraft, setAddDraft] = React.useState(null);
+      // 客户端登录态扫描结果 / 勾选集合 / 自定义扫描根目录
+      const [clientScan, setClientScan] = React.useState(null);
+      const [clientSelected, setClientSelected] = React.useState([]);
+      const [clientRootDraft, setClientRootDraft] = React.useState('');
 
       const flash = (msg, kind) => {
         setError(kind === 'error' ? msg : '');
@@ -196,7 +200,11 @@ window.__ModuleLoader__.load({
           get('status'), get('config'), get('state'), get('models'), get('synced'), get('logs?lines=80'),
         ]);
         if (st.ok) setStatus(st.data);
-        if (cfg.ok) { setConfig(cfg.data); setCfgDraft(cfg.data); }
+        if (cfg.ok) {
+          setConfig(cfg.data);
+          setCfgDraft(cfg.data);
+          setClientRootDraft((prev) => (prev === '' ? (cfg.data.clientRoot || '') : prev));
+        }
         if (stt.ok) setState(stt.data); else setState(null);
         if (md.ok) setModels(md.data.models || []); else setModels([]);
         if (sy.ok) setSynced(sy.data); else setSynced(null);
@@ -403,6 +411,102 @@ window.__ModuleLoader__.load({
           h('table', { style: S.table }, head, h('tbody', null, rows)));
       }
 
+      // ---- 桌面客户端登录态扫描 ----
+      const doClientScan = () => act('client-scan', async () => {
+        const q = clientRootDraft ? '?root=' + encodeURIComponent(clientRootDraft) : '';
+        const r = await get('clientScan' + q);
+        if (r.ok) {
+          setClientScan(r.data);
+          // 默认勾选「未过期 且 尚未导入」的项
+          setClientSelected((r.data.items || []).filter((it) => !it.expired && !it.alreadyImported).map((it) => it.token));
+        }
+        return r;
+      });
+
+      const doClientImport = () => act('client-import', async () => {
+        const r = await post('clientImport', { tokens: clientSelected });
+        if (r.ok) {
+          setClientSelected([]);
+          // 重新扫描一次，让「已导入」状态刷新
+          const q = clientRootDraft ? '?root=' + encodeURIComponent(clientRootDraft) : '';
+          const s = await get('clientScan' + q);
+          if (s.ok) setClientScan(s.data);
+        }
+        return r;
+      });
+
+      const toggleClientToken = (token) => setClientSelected((prev) =>
+        prev.includes(token) ? prev.filter((x) => x !== token) : [...prev, token]);
+
+      function clientScanCard() {
+        const items = (clientScan && clientScan.items) || [];
+        const errors = (clientScan && clientScan.errors) || [];
+        const selectable = items.filter((it) => !it.expired && !it.alreadyImported);
+        const allSelected = selectable.length > 0 && selectable.every((it) => clientSelected.includes(it.token));
+        return card('ac-scan', '扫描桌面客户端登录态',
+          h('span', { style: S.row },
+            btn('scan-root-toggle', clientRootDraft ? '自定义目录 ✓' : '默认目录',
+              () => { /* 目录输入在下方表单里，这里只作状态提示 */ return Promise.resolve({ ok: true, data: {} }); }),
+            btn('ac-scan-btn', busy === 'client-scan' ? '扫描中…' : '扫描客户端', doClientScan, { primary: true })),
+          [
+            h('div', { key: 'rootrow', style: S.row },
+              h('label', { style: { ...S.metaItem, flex: 1, minWidth: 280 } }, '扫描根目录',
+                h('input', {
+                  style: { ...S.input, flex: 1, minWidth: 260 },
+                  value: clientRootDraft,
+                  placeholder: '留空 = C:\\Users\\Public\\Loomy',
+                  onChange: (e) => setClientRootDraft(e.target.value),
+                })),
+              h('span', { key: 'hint', style: S.hint }, clientScan ? `上次扫描：${clientScan.root}` : '点「扫描客户端」读取 auth-session.json')),
+            h('div', { key: 'notice', style: S.hint },
+              '客户端只保留最后登录的一个账号：登录第二个会覆盖 auth-session.json。要导入多个账号，请逐个登录并分别扫描导入；已导入的持久账号不会因覆盖而丢失。'),
+            errors.length
+              ? h('div', { key: 'errs', style: S.warn }, errors.join('；'))
+              : null,
+            !clientScan
+              ? h('div', { key: 'empty', style: S.hint },
+                  '扫描本机 Loomy 桌面客户端的登录态，勾选后可一键导入为账号池里的持久账号（会写入 accounts.json，可启用/停用/续期）。')
+              : items.length === 0
+                ? h('div', { key: 'none', style: S.hint }, '未发现客户端登录态文件。')
+                : h('div', { key: 'list', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                    h('label', { key: 'all', style: { ...S.metaItem, cursor: 'pointer' } },
+                      h('input', {
+                        type: 'checkbox',
+                        checked: allSelected,
+                        onChange: () => setClientSelected(allSelected ? [] : selectable.map((it) => it.token)),
+                      }),
+                      h('span', { style: S.hint }, `全选可导入（${selectable.length}）`)),
+                    items.map((it) => {
+                      const blocked = it.expired || it.alreadyImported;
+                      return h('label', {
+                        key: it.token,
+                        style: {
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '6px 8px', borderRadius: 6,
+                          border: '1px solid ' + C.border, background: C.raised,
+                          opacity: blocked ? 0.55 : 1, cursor: blocked ? 'not-allowed' : 'pointer',
+                        },
+                      },
+                        h('input', {
+                          type: 'checkbox', disabled: blocked,
+                          checked: !it.alreadyImported && clientSelected.includes(it.token),
+                          onChange: () => toggleClientToken(it.token),
+                        }),
+                        h('span', { style: { fontFamily: MONO, fontSize: 12, minWidth: 110 } }, it.phoneMasked),
+                        h('span', { style: S.hint }, it.sessionMasked),
+                        h('span', { style: { ...S.hint, marginLeft: 'auto' } },
+                          it.alreadyImported ? '已导入' : it.expired ? '已过期' : (it.daysLeft === null ? '有效期未知' : `剩余 ${it.daysLeft} 天`)),
+                      );
+                    })),
+            clientScan && items.length
+              ? h('div', { key: 'actions', style: S.row },
+                  btn('ac-import', busy === 'client-import' ? '导入中…' : `导入选中（${clientSelected.length}）`,
+                    doClientImport, { primary: true, disabled: clientSelected.length === 0 }),
+                  h('span', { key: 'tip', style: S.hint }, '导入为持久账号；同一 session 已存在会跳过。'))
+              : null,
+          ]);
+      }
+
       function accountsView() {
         const accounts = (state && state.accounts) || [];
         const totals = (state && state.totals) || {};
@@ -418,6 +522,7 @@ window.__ModuleLoader__.load({
                 meta('消耗点数', shortNum(totals.points_used)),
                 meta('路由策略', state && state.config ? state.config.strategy : '—')),
             ]),
+          clientScanCard(),
           accounts.length
             ? accountTable(accounts)
             : h('div', { key: 'empty', style: S.card },
