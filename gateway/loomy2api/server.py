@@ -103,7 +103,16 @@ class Gateway:
     def start(self) -> None:
         self.pool.bootstrap()
         self.pool.start()
-        self.refresh_models()
+        # Do not block startup on the upstream catalogue: on WSL the TLS
+        # handshake to the upstream can hang, and serve() only begins
+        # listening *after* start() returns. The fallback list is already in
+        # place via catalogue(), so refresh in a daemon thread instead.
+        with self._models_lock:
+            if not self.models:
+                self.models = [dict(m, object="model", owned_by="loomy")
+                               for m in C.FALLBACK_MODELS]
+        threading.Thread(target=self.refresh_models,
+                         name="gateway-models-refresh", daemon=True).start()
 
 
 # ------------------------------------------------------------------ handler

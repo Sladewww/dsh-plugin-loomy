@@ -112,6 +112,7 @@ function writeGatewayConfig(state, key) {
     client_root: String(state.clientRoot || CLIENT_ROOT_DEFAULT),
     proxy: String(state.proxy || ''),
     quota_timeout: Number(state.quotaTimeout) || 5,
+    models_timeout: 5,
   };
   const file = join(dir, 'config.json');
   writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
@@ -332,16 +333,24 @@ export function apply(ctx, config) {
     return { ok: true, status: response.status, data };
   }
 
-  function statusPayload() {
+  async function statusPayload() {
     const s = state();
     const owned = !!child && child.exitCode === null && !child.killed;
-    const running = owned || adopted;
+    // 接管来的进程可能已被外部 kill；用 /health 复核，避免 status 长期
+    // 显示 running=true 而实际端口已死（WSL 下手动 kill 后尤其容易）。
+    let adoptedAlive = false;
+    if (adopted && !owned) {
+      const alive = await gwFetch('GET', '/health', undefined, 1500).catch(() => ({ ok: false }));
+      adoptedAlive = !!(alive.ok && alive.data && alive.data.name === 'loomy2api');
+      if (!adoptedAlive) { adopted = false; startedAt = 0; }
+    }
+    const running = owned || adoptedAlive;
     return {
       ok: true,
       data: {
         running,
         owned,
-        adopted: !owned && adopted,
+        adopted: !owned && adoptedAlive,
         pid: owned ? child.pid : null,
         startedAt: startedAt || null,
         port: Number(s.port) || 17890,
@@ -359,7 +368,16 @@ export function apply(ctx, config) {
   }
 
   async function startGateway() {
-    if ((child && child.exitCode === null) || adopted) return statusPayload();
+    if (child && child.exitCode === null) return await statusPayload();
+    // `adopted` 只表示「上次探测时端口上有 loomy2api」。若那个孤儿进程后来
+    // 被外部 kill（或 WSL 里手动 kill 后没走插件的 stop），标志不会自动
+    // 复位，start 会永远误判「已在运行」而不再拉起。用 /health 复核一次。
+    if (adopted) {
+      const alive = await gwFetch('GET', '/health', undefined, 2000).catch(() => ({ ok: false }));
+      if (alive.ok && alive.data && alive.data.name === 'loomy2api') return await statusPayload();
+      adopted = false;
+      startedAt = 0;
+    }
     const s = state();
     const port = Number(s.port) || 17890;
     // 端口已被占：可能是上一次插件实例留下的孤儿网关（configEditor 重启
@@ -371,7 +389,7 @@ export function apply(ctx, config) {
         adopted = true;
         startedAt = Date.now();
         lastError = '';
-        return { ok: true, data: { ...statusPayload().data, health: health.data, adopted: true, message: '检测到已有网关进程，已接管（无需重启）。' } };
+        return { ok: true, data: { ...(await statusPayload()).data, health: health.data, adopted: true, message: '检测到已有网关进程，已接管（无需重启）。' } };
       }
       return { ok: false, message: probe.message };
     }
@@ -394,6 +412,7 @@ export function apply(ctx, config) {
       LOOMY_DEFAULT_MODEL: s.defaultModel,
       LOOMY_PROXY: String(s.proxy || ''),
       LOOMY_QUOTA_TIMEOUT: String(Number(s.quotaTimeout) || 5),
+      LOOMY_MODELS_TIMEOUT: '5',
       LOOMY_CLIENT_ROOT: String(s.clientRoot || CLIENT_ROOT_DEFAULT),
     };
 
@@ -425,18 +444,50 @@ export function apply(ctx, config) {
     for (let i = 0; i < 24; i += 1) {
       if (!child || child.exitCode !== null) break;
       const health = await gwFetch('GET', '/health', undefined, 1200);
-      if (health.ok) return { ok: true, data: { ...statusPayload().data, health: health.data } };
+      if (health.ok) return { ok: true, data: { ...(await statusPayload()).data, health: health.data } };
       await new Promise((r) => setTimeout(r, 300));
     }
     if (!child || child.exitCode !== null) {
       return { ok: false, message: lastError || '网关启动后立即退出，请查看下方日志。' };
     }
-    return { ok: true, data: { ...statusPayload().data, warning: '进程已启动，但 /health 尚未就绪；稍后刷新状态。' } };
+    return { ok: true, data: { ...(await statusPayload()).data, warning: '进程已启动，但 /health 尚未就绪；稍后刷新状态。' } };
   }
 
-  /** 按端口查监听 PID（Windows / Linux 均可），用于停掉接管来的孤儿网关。 */
+  /** 按端口查监听 PID，用于停掉接管来的孤儿网关。Windows 与 Linux 分开处理。 */
   async function listenerPid(port) {
     const { execFileSync } = await import('node:child_process');
+    // Linux/WSL: `ss -ltnp` 输出形如
+    //   LISTEN 0 128 127.0.0.1:17890 0.0.0.0:* users:(("python",pid=5171,fd=3))
+    if (process.platform === 'linux') {
+      for (const [bin, args] of [['ss', ['-ltnp']], ['netstat', ['-ltnp']]]) {
+        try {
+          const out = execFileSync(bin, args, { encoding: 'utf8', timeout: 8000, windowsHide: true });
+          for (const line of out.split(/\r?\n/)) {
+            if (!line.includes(':' + port)) continue;
+            const m = line.match(/pid=(\d+)/) || line.match(/\s(\d+)\/[^/\s]+/);
+            if (m) { const pid = Number(m[1]); if (pid > 0) return pid; }
+          }
+        } catch { /* 该命令不可用，试下一个 */ }
+      }
+      // 兜底：从 /proc 找监听该端口的进程（ss/netstat 都缺失时）。
+      try {
+        const needle = (Number(port) || 17890).toString(16).toUpperCase().padStart(4, '0');
+        for (const ent of readdirSync('/proc')) {
+          if (!/^\d+$/.test(ent)) continue;
+          try {
+            const tcp = readFileSync(`/proc/${ent}/net/tcp`, 'utf8');
+            for (const line of tcp.split('\n').slice(1)) {
+              const cols = line.trim().split(/\s+/);
+              if (cols.length > 3 && cols[1] && cols[1].split(':')[1] === needle && cols[3] === '0A') {
+                return Number(ent);
+              }
+            }
+          } catch { /* 进程已退出或无权限 */ }
+        }
+      } catch { /* ignore */ }
+      return undefined;
+    }
+    // Windows: `netstat -ano -p tcp`
     try {
       const out = execFileSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
       for (const line of out.split(/\r?\n/)) {
@@ -656,7 +707,7 @@ export function apply(ctx, config) {
   /** 路由分发。返回值直接作为 JSON 响应体。 */
   async function dispatch(method, path, query, body) {
     switch (`${method} ${path}`) {
-      case 'GET status': return statusPayload();
+      case 'GET status': return await statusPayload();
       case 'POST start': return startGateway();
       case 'POST stop': return stopGateway();
       case 'GET diagnose': {

@@ -55,6 +55,9 @@ DEFAULTS: Dict[str, Any] = {
     # write. Keep it short; quota is cosmetic and the background refresh will
     # retry on its own cadence.
     "quota_timeout": 5.0,
+    # Separate short budget for the /models read at startup. Never reuse the
+    # chat request timeout (1200s here) for a catalogue fetch.
+    "models_timeout": 5.0,
     # identity_mode: per_account → each account gets its own devid / campus id;
     #                client       → mirror the shipped client exactly.
     "identity_mode": "per_account",
@@ -75,11 +78,12 @@ ENV_MAP = {
     "LOOMY_STRATEGY": "strategy",
     "LOOMY_PROXY": "proxy",
     "LOOMY_QUOTA_TIMEOUT": "quota_timeout",
+    "LOOMY_MODELS_TIMEOUT": "models_timeout",
     "LOOMY_CLIENT_ROOT": "client_root",
 }
 
 #: Keys whose environment values should be parsed as numbers.
-NUMERIC_ENV_KEYS = {"quota_timeout"}
+NUMERIC_ENV_KEYS = {"quota_timeout", "models_timeout"}
 
 
 class Config(dict):

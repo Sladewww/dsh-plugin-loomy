@@ -65,9 +65,17 @@ class ModelGateway:
     # -- read-only ------------------------------------------------------
 
     def models(self, session: str) -> Dict[str, Any]:
+        # `timeout` is the *chat* timeout (1200s by default) — using it here
+        # would freeze gateway startup for 20 minutes when the upstream is
+        # unreachable. The catalogue is a cheap read with a built-in fallback,
+        # so give it its own short, configurable budget.
+        try:
+            models_timeout = float(self.cfg.get("models_timeout") or 5.0)
+        except (TypeError, ValueError):
+            models_timeout = 5.0
         status, _h, data = http_request(
             self._url("models"), method="GET", headers=self._headers(session),
-            timeout=float(self.cfg.get("timeout") or 60),
+            timeout=models_timeout,
             proxy=str(self.cfg.get("proxy") or ""))
         if status != 200:
             raise UpstreamError(f"/models HTTP {status}: "
