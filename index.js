@@ -549,7 +549,6 @@ export function apply(ctx, config) {
    * 上游用 `none` 表示「不思考」，对应 pi-ai 的 `off`；网关全量透传请求体，
    * 所以 wire 拼写必须与上游 /v1/models 里声明的一致。
    */
-  const PI_AI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const UPSTREAM_TO_PI_AI_EFFORT = { none: 'off', no: 'off', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' };
   const PI_AI_TO_UPSTREAM_EFFORT = { off: 'none', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' };
   /** 每次拉目录时重建：id -> 上游原始能力，仅供面板展示，不写入 pi-ai 配置。 */
@@ -571,11 +570,9 @@ export function apply(ctx, config) {
     // 上游若给了 reasoning_efforts 却没有任何可映射等级，宁可不声明（沿用
     // 目录默认）也不要提交一个会让配置校验失败的空表。
     if (!Object.keys(efforts).some((l) => l !== 'off')) return undefined;
-    // 未声明的等级必须显式钉成 null（不支持），否则 pi-ai 会按自己的默认
-    // 规则把 xhigh/max 当成支持，出现选择器有档位但上游不认的情况。
-    for (const level of PI_AI_THINKING_LEVELS) {
-      if (!(level in efforts)) efforts[level] = null;
-    }
+    // 只声明上游真实支持的等级：pi-ai 的 resolveModelReasoning() 会自己把
+    // 未声明的等级钉成 null（不支持）。显式写 null 反而会被配置校验拒绝
+    // （「needs the wire value dispatch should send; only off may leave it empty」）。
     return efforts;
   }
 
