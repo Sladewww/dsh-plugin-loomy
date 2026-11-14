@@ -188,6 +188,8 @@ window.__ModuleLoader__.load({
       const [clientScan, setClientScan] = React.useState(null);
       const [clientSelected, setClientSelected] = React.useState([]);
       const [clientRootDraft, setClientRootDraft] = React.useState('');
+      // 上游返回的模型能力（上下文/最大输出/图片/思考等级），仅供面板展示
+      const [modelCaps, setModelCaps] = React.useState({});
 
       const flash = (msg, kind) => {
         setError(kind === 'error' ? msg : '');
@@ -206,7 +208,8 @@ window.__ModuleLoader__.load({
           setClientRootDraft((prev) => (prev === '' ? (cfg.data.clientRoot || '') : prev));
         }
         if (stt.ok) setState(stt.data); else setState(null);
-        if (md.ok) setModels(md.data.models || []); else setModels([]);
+        if (md.ok) { setModels(md.data.models || []); setModelCaps(md.data.capabilities || {}); }
+        else { setModels([]); setModelCaps({}); }
         if (sy.ok) setSynced(sy.data); else setSynced(null);
         if (lg.ok) setLogs((lg.data && lg.data.lines) || []);
         if (!st.ok) setError(st.message);
@@ -325,12 +328,23 @@ window.__ModuleLoader__.load({
           onClick: () => toggleOne(id, !on),
         }, h('span', { style: knobStyle(on) }));
 
-        const modelRows = models.map((m) => h('tr', { key: m.id },
-          h('td', { style: { ...S.td, fontFamily: MONO } }, m.id),
-          h('td', { style: S.td }, m.name),
-          h('td', { style: S.td }, m.contextWindow ? shortNum(m.contextWindow) : '—'),
-          h('td', { style: S.td }, Switch(m.id, isOn(m.id)),
-            h('span', { style: { marginLeft: 8, color: isOn(m.id) ? C.ok : C.tertiary, fontSize: 11 } }, isOn(m.id) ? '启用' : '停用'))));
+        const cap = (id) => modelCaps[id] || {};
+        const fmtTok = (n) => Number.isFinite(n) && n > 0 ? shortNum(n) : '—';
+        const modelRows = models.map((m) => {
+          const c = cap(m.id);
+          const effortList = Array.isArray(c.reasoningEfforts) ? c.reasoningEfforts : [];
+          return h('tr', { key: m.id },
+            h('td', { style: { ...S.td, fontFamily: MONO } }, m.id),
+            h('td', { style: S.td }, m.name),
+            h('td', { style: S.td }, m.contextWindow ? shortNum(m.contextWindow) : '—'),
+            h('td', { style: S.td }, fmtTok(c.maxOutputTokens)),
+            h('td', { style: S.td }, c.vision ? '✓ 支持' : '—'),
+            h('td', { style: S.td }, effortList.length
+              ? h('span', { style: { fontFamily: MONO, fontSize: 11 } }, effortList.join(' / '))
+              : '—'),
+            h('td', { style: S.td }, Switch(m.id, isOn(m.id)),
+              h('span', { style: { marginLeft: 8, color: isOn(m.id) ? C.ok : C.tertiary, fontSize: 11 } }, isOn(m.id) ? '启用' : '停用')));
+        });
 
         return [
           card('md-sync', '同步模型到 DSH',
@@ -355,7 +369,9 @@ window.__ModuleLoader__.load({
                   h('table', { key: 'tbl', style: S.table },
                     h('thead', null, h('tr', null,
                       h('th', { style: S.th }, '模型 ID'), h('th', { style: S.th }, '显示名'),
-                      h('th', { style: S.th }, '上下文'), h('th', { style: S.th }, '启用'))),
+                      h('th', { style: S.th }, '上下文'), h('th', { style: S.th }, '最大输出'),
+                      h('th', { style: S.th }, '图片理解'), h('th', { style: S.th }, '思考等级'),
+                      h('th', { style: S.th }, '启用'))),
                     h('tbody', null, modelRows)))
               : h('div', { key: 'empty', style: S.hint }, '未读取到模型目录。请先启动网关，再点「同步模型到 DSH」。'),
           ]),

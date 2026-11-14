@@ -544,6 +544,41 @@ export function apply(ctx, config) {
     };
   }
 
+  /**
+   * pi-ai 允许的思考等级（见 dsh-llm-pi-ai 的 THINKING_LEVELS）。
+   * 上游用 `none` 表示「不思考」，对应 pi-ai 的 `off`；网关全量透传请求体，
+   * 所以 wire 拼写必须与上游 /v1/models 里声明的一致。
+   */
+  const PI_AI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const UPSTREAM_TO_PI_AI_EFFORT = { none: 'off', no: 'off', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' };
+  const PI_AI_TO_UPSTREAM_EFFORT = { off: 'none', minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' };
+  /** 每次拉目录时重建：id -> 上游原始能力，仅供面板展示，不写入 pi-ai 配置。 */
+  let capabilityNotes = new Map();
+
+  /** 把上游的 reasoning_efforts 数组转成 pi-ai 的 reasoningEfforts 映射。 */
+  function mapReasoningEfforts(row) {
+    const raw = row && Array.isArray(row.reasoning_efforts) ? row.reasoning_efforts : [];
+    const declared = new Set();
+    const efforts = {};
+    for (const item of raw) {
+      const level = UPSTREAM_TO_PI_AI_EFFORT[String(item).toLowerCase()];
+      if (level && !declared.has(level)) {
+        declared.add(level);
+        efforts[level] = PI_AI_TO_UPSTREAM_EFFORT[level];
+      }
+    }
+    // pi-ai 要求至少声明一个非 off 等级，否则该模型会被判为「无思考能力」。
+    // 上游若给了 reasoning_efforts 却没有任何可映射等级，宁可不声明（沿用
+    // 目录默认）也不要提交一个会让配置校验失败的空表。
+    if (!Object.keys(efforts).some((l) => l !== 'off')) return undefined;
+    // 未声明的等级必须显式钉成 null（不支持），否则 pi-ai 会按自己的默认
+    // 规则把 xhigh/max 当成支持，出现选择器有档位但上游不认的情况。
+    for (const level of PI_AI_THINKING_LEVELS) {
+      if (!(level in efforts)) efforts[level] = null;
+    }
+    return efforts;
+  }
+
   /** 从网关拉模型目录，映射成 pi-ai 的 models 条目。 */
   async function fetchModels() {
     const res = await gwFetch('GET', '/v1/models', undefined, 15000);
@@ -552,28 +587,60 @@ export function apply(ctx, config) {
     const models = [];
     const skipped = [];
     const seen = new Set();
+    capabilityNotes = new Map();
     for (const row of rows) {
       const id = typeof row === 'string' ? row : String((row && (row.id || row.name)) || '');
       if (!id || seen.has(id)) continue;
-      // 上游把图像生成模型也列在 /v1/models 里（它们的 modalities 也带 text），
-      // 但 chat 路由调用会失败。按 id 前缀排除这些纯图像生成条目。
-      const isImageGen = /^(hy-image|doubao-seedream|qwen-image)/i.test(id);
+      // 图像生成模型（type=image 或 output_modalities 含 image）走的是
+      // /v1/images/generations，chat 路由调用会失败，不纳入模型选择器。
+      const caps = (row && row.capabilities && typeof row.capabilities === 'object') ? row.capabilities : {};
+      const outModalities = Array.isArray(caps.output_modalities) ? caps.output_modalities : [];
+      const isImageGen = (row && row.type === 'image')
+        || /^(hy-image|doubao-seedream|qwen-image)/i.test(id)
+        || outModalities.includes('image');
       if (isImageGen) { skipped.push(id); continue; }
       // `auto` 是上游的「自动·均衡」路由别名，不是具体模型；在 pi-ai 的
       // 模型选择器里它无法对应确定的上下文/能力，且会让用户以为选了新模型。
       if (/^auto$/i.test(id)) { skipped.push(id); continue; }
-      const modalities = (row && Array.isArray(row.modalities)) ? row.modalities : [];
+      // 新版上游把模态移到 capabilities.input_modalities；旧版用顶层
+      // modalities。两者都兼容，pi-ai 只接受 text/image。
+      const inModalities = Array.isArray(caps.input_modalities)
+        ? caps.input_modalities
+        : (row && Array.isArray(row.modalities) ? row.modalities : []);
       seen.add(id);
       const ctxLen = Number(row && row.context_length);
+      const outLen = Number(row && row.max_output_tokens);
+      const efforts = mapReasoningEfforts(row);
       models.push({
         id,
         name: (row && row.name && row.name !== id) ? String(row.name) : id,
-        contextWindow: Number.isFinite(ctxLen) && ctxLen > 0 ? Math.min(ctxLen, 1000000) : 128000,
-        maxTokens: 8192,
-        input: modalities.includes('image') || modalities.includes('video') ? ['text', 'image'] : ['text'],
+        // 保留上游真实值：pi-ai 用 contextWindow 做溢出检测，截断会误判长对话。
+        contextWindow: Number.isFinite(ctxLen) && ctxLen > 0 ? Math.floor(ctxLen) : 1000000,
+        // maxTokens 是模型输出能力上限（不是本次请求预算），用上游的
+        // max_output_tokens；旧实现写死 8192 会把长输出无谓地截断。
+        maxTokens: Number.isFinite(outLen) && outLen > 0 ? Math.floor(outLen) : 128000,
+        input: inModalities.includes('image') || inModalities.includes('video') || caps.vision === true
+          ? ['text', 'image'] : ['text'],
+        // 供面板展示用的附加能力（pi-ai 不消费，写进模型条目也无害，但
+        // 为避免 schema 校验报错只放在 data 的扩展字段里由面板另取）。
+        ...(efforts ? { reasoningEfforts: efforts } : {}),
+      });
+      // 记录原始能力供面板展示；不写进 pi-ai 的 models 条目。
+      const last = models[models.length - 1];
+      capabilityNotes.set(id, {
+        contextLength: Number.isFinite(ctxLen) && ctxLen > 0 ? Math.floor(ctxLen) : null,
+        maxOutputTokens: Number.isFinite(outLen) && outLen > 0 ? Math.floor(outLen) : null,
+        vision: !!(caps.vision || inModalities.includes('image')),
+        reasoning: !!caps.reasoning,
+        reasoningEfforts: Array.isArray(row && row.reasoning_efforts) ? row.reasoning_efforts : [],
+        defaultReasoningEffort: (row && row.default_reasoning_effort) || null,
+        functionCalling: !!caps.function_calling,
+        streaming: !!caps.streaming,
+        inputModalities: inModalities,
+        outputModalities: outModalities,
       });
     }
-    return { ok: true, data: { models, skipped, raw: rows } };
+    return { ok: true, data: { models, skipped, raw: rows, capabilities: Object.fromEntries(capabilityNotes) } };
   }
 
   /** 插件自己那一行 Config 的 entry（用于读写 enabledModels）。 */
