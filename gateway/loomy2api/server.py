@@ -56,31 +56,81 @@ class Gateway:
         self.panel = Panel(self)
         self.models: list = []
         self._models_lock = threading.Lock()
+        # Whether `models` came from the upstream (True) or is the built-in
+        # FALLBACK_MODELS list (False). A non-empty fallback used to make
+        # `_models()` believe the catalogue was fresh forever, so the gateway
+        # kept serving a stale list after a failed startup refresh.
+        self._models_from_upstream = False
+        self._models_updated_at = 0.0
+        self._models_last_attempt = 0.0
+        self._models_stop = threading.Event()
+        try:
+            self._models_refresh_seconds = max(
+                60, int(float(self.cfg.get("models_refresh_minutes") or 5) * 60))
+        except (TypeError, ValueError):
+            self._models_refresh_seconds = 300
 
     # -- model catalogue -------------------------------------------------
 
+    def _fallback_models(self) -> list:
+        return [dict(m, object="model", owned_by="loomy")
+                for m in C.FALLBACK_MODELS]
+
     def refresh_models(self) -> list:
+        """Fetch the live upstream catalogue. Returns the list in use.
+
+        Failures are always logged (the old code stayed silent whenever a
+        fallback list was already present), so an unreachable upstream is
+        visible in the panel instead of looking like "no new models".
+        """
+        # Throttle: both the background loop and GET /v1/models can ask for a
+        # refresh. Never hit the upstream more than once per 20s, so a dead
+        # upstream cannot add its timeout to every panel request.
+        now = time.time()
+        with self._models_lock:
+            if now - self._models_last_attempt < 20:
+                return list(self.models)
+            self._models_last_attempt = now
         try:
             acc = self.pool.acquire()
             payload = self.models_client.models(acc.session)
             data = payload.get("data") or []
+            if not data:
+                raise ValueError("上游 /models 返回了空目录")
             with self._models_lock:
                 self.models = data
+                self._models_from_upstream = True
+                self._models_updated_at = time.time()
             self.log(f"上游模型列表已刷新：{len(data)} 个")
         except Exception as exc:                        # noqa: BLE001
             with self._models_lock:
                 have = bool(self.models)
-            if not have:
-                self.models = [dict(m, object="model", owned_by="loomy")
-                               for m in C.FALLBACK_MODELS]
-                self.log(f"[warn] 拉取模型列表失败，使用内置清单：{exc}")
+                if not have:
+                    self.models = self._fallback_models()
+                    self._models_from_upstream = False
+            self.log(f"[warn] 拉取模型列表失败（{exc}）；"
+                     + ("继续使用内置清单，稍后自动重试" if have
+                        else "已使用内置清单，稍后自动重试"))
         return self.models
 
-    def catalogue(self) -> list:
+    def _models_stale(self) -> bool:
+        with self._models_lock:
+            if not self._models_from_upstream:
+                return True
+            return (time.time() - self._models_updated_at) >= self._models_refresh_seconds
+
+    def catalogue(self, *, allow_refresh: bool = False) -> list:
+        """Return the catalogue, optionally refreshing it when stale.
+
+        Kept as a cheap read for chat routing; /v1/models passes
+        allow_refresh=True so the DSH panel always sees new upstream models.
+        """
+        if allow_refresh and self._models_stale():
+            self.refresh_models()
         with self._models_lock:
             if not self.models:
-                self.models = [dict(m, object="model", owned_by="loomy")
-                               for m in C.FALLBACK_MODELS]
+                self.models = self._fallback_models()
+                self._models_from_upstream = False
             return list(self.models)
 
     def resolve_model(self, requested: str) -> str:
@@ -111,8 +161,27 @@ class Gateway:
             if not self.models:
                 self.models = [dict(m, object="model", owned_by="loomy")
                                for m in C.FALLBACK_MODELS]
-        threading.Thread(target=self.refresh_models,
+        threading.Thread(target=self._models_loop,
                          name="gateway-models-refresh", daemon=True).start()
+
+    def _models_loop(self) -> None:
+        """Retry the catalogue fetch until it succeeds, then keep it fresh.
+
+        A one-shot daemon thread used to give up permanently when the upstream
+        was unreachable at boot; the gateway then served the stale fallback
+        list for its whole lifetime. Retry quickly on failure and refresh on a
+        slower cadence once healthy.
+        """
+        while not self._models_stop.is_set():
+            self.refresh_models()
+            with self._models_lock:
+                healthy = self._models_from_upstream
+            interval = self._models_refresh_seconds if healthy else 30
+            self._models_stop.wait(interval)
+        return
+
+    def stop(self) -> None:
+        self._models_stop.set()
 
 
 # ------------------------------------------------------------------ handler
@@ -391,10 +460,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _models(self) -> None:
         gw = self.gateway
-        catalogue = gw.catalogue()
-        if not catalogue:
-            gw.refresh_models()
-            catalogue = gw.catalogue()
+        # Refresh when stale (or still on the fallback list) so the DSH panel
+        # picks up newly added upstream models without a manual gateway
+        # restart. refresh_models() has its own short timeout and degrades to
+        # the cached list on failure.
+        catalogue = gw.catalogue(allow_refresh=True)
         return self._json(200, {"object": "list", "data": list(catalogue)})
 
     def _points(self) -> None:
@@ -740,6 +810,7 @@ def serve(cfg, *, gateway: Optional[Gateway] = None) -> Gateway:
     except KeyboardInterrupt:
         gw.log("收到中断，退出 / interrupted, shutting down")
     finally:
+        gw.stop()
         gw.pool.stop()
         gw.pool.flush()
         httpd.server_close()

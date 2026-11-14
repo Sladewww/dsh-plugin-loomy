@@ -559,6 +559,9 @@ export function apply(ctx, config) {
       // 但 chat 路由调用会失败。按 id 前缀排除这些纯图像生成条目。
       const isImageGen = /^(hy-image|doubao-seedream|qwen-image)/i.test(id);
       if (isImageGen) { skipped.push(id); continue; }
+      // `auto` 是上游的「自动·均衡」路由别名，不是具体模型；在 pi-ai 的
+      // 模型选择器里它无法对应确定的上下文/能力，且会让用户以为选了新模型。
+      if (/^auto$/i.test(id)) { skipped.push(id); continue; }
       const modalities = (row && Array.isArray(row.modalities)) ? row.modalities : [];
       seen.add(id);
       const ctxLen = Number(row && row.context_length);
@@ -597,9 +600,12 @@ export function apply(ctx, config) {
     }
     // 首次同步（Config 里还没有 enabledModels）时，默认全启用；
     // 之后用户手动调过的清单保持不变，只补进上游新增的模型。
+    // 但如果上游整体换了一代型号（例如 deepseek-v4-flash-0731 → 1017），
+    // 旧清单会全部失效；此时不能让 pi-ai 留着不存在的模型，直接回退全启用。
     const current = enabledIds();
-    const merged = current.length
-      ? [...current.filter((id) => catalog.some((m) => m.id === id)),
+    const stillValid = current.filter((id) => catalog.some((m) => m.id === id));
+    const merged = current.length && stillValid.length
+      ? [...stillValid,
          ...catalog.map((m) => m.id).filter((id) => !current.includes(id))]
       : catalog.map((m) => m.id);
     const save = await setEnabledIds(merged, catalog, true);

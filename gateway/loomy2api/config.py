@@ -58,6 +58,9 @@ DEFAULTS: Dict[str, Any] = {
     # Separate short budget for the /models read at startup. Never reuse the
     # chat request timeout (1200s here) for a catalogue fetch.
     "models_timeout": 5.0,
+    # How often to re-fetch the upstream catalogue once healthy (minutes).
+    # On failure the gateway retries every 30 seconds instead.
+    "models_refresh_minutes": 5,
     # identity_mode: per_account → each account gets its own devid / campus id;
     #                client       → mirror the shipped client exactly.
     "identity_mode": "per_account",
@@ -79,6 +82,7 @@ ENV_MAP = {
     "LOOMY_PROXY": "proxy",
     "LOOMY_QUOTA_TIMEOUT": "quota_timeout",
     "LOOMY_MODELS_TIMEOUT": "models_timeout",
+    "LOOMY_MODELS_REFRESH_MINUTES": "models_refresh_minutes",
     "LOOMY_CLIENT_ROOT": "client_root",
 }
 
