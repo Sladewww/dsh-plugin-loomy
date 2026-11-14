@@ -76,9 +76,15 @@ class ModelGateway:
 
     def points_records(self, session: str, page_size: int = 20) -> Dict[str, Any]:
         url = self._url(f"points/records?record_type=all&page_no=1&page_size={page_size}")
+        # Short, configurable timeout: an unreachable upstream (common on WSL
+        # without a proxy) must not stall panel writes for 30s.
+        try:
+            quota_timeout = float(self.cfg.get("quota_timeout") or 5.0)
+        except (TypeError, ValueError):
+            quota_timeout = 5.0
         status, _h, data = http_request(
             url, method="GET", headers=self._headers(session),
-            timeout=30, proxy=str(self.cfg.get("proxy") or ""))
+            timeout=quota_timeout, proxy=str(self.cfg.get("proxy") or ""))
         if status != 200:
             raise UpstreamError(f"/points/records HTTP {status}", status)
         return json.loads(data.decode("utf-8"))

@@ -50,6 +50,11 @@ DEFAULTS: Dict[str, Any] = {
     "quota_refresh_minutes": 30,
     "sessions_from_client": True, # also honour the desktop client's session
     "client_root": "",            # override the client's data dir (tests)
+    # Socket timeout for the *quota* probe. The default 30s is far too long
+    # when the upstream is unreachable from WSL: it used to stall every panel
+    # write. Keep it short; quota is cosmetic and the background refresh will
+    # retry on its own cadence.
+    "quota_timeout": 5.0,
     # identity_mode: per_account → each account gets its own devid / campus id;
     #                client       → mirror the shipped client exactly.
     "identity_mode": "per_account",
@@ -68,7 +73,13 @@ ENV_MAP = {
     "LOOMY_ACCOUNTS_FILE": "accounts_file",
     "LOOMY_LOG_DIR": "log_dir",
     "LOOMY_STRATEGY": "strategy",
+    "LOOMY_PROXY": "proxy",
+    "LOOMY_QUOTA_TIMEOUT": "quota_timeout",
+    "LOOMY_CLIENT_ROOT": "client_root",
 }
+
+#: Keys whose environment values should be parsed as numbers.
+NUMERIC_ENV_KEYS = {"quota_timeout"}
 
 
 class Config(dict):
@@ -105,6 +116,11 @@ def _coerce(cfg: Dict[str, Any], key: str, value: str) -> Any:
     base = DEFAULTS.get(key)
     if key in ("host", "upstream", "proxy") or isinstance(base, str):
         return value
+    if key in NUMERIC_ENV_KEYS or isinstance(base, float):
+        try:
+            return float(value)
+        except ValueError:
+            return base
     if isinstance(base, int):
         try:
             return int(value)

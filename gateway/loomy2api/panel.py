@@ -20,6 +20,7 @@ Endpoints
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -46,6 +47,15 @@ class Panel:
     def __init__(self, gateway):
         self.gw = gateway
         self.log = gateway.log
+        # Quota probes hit the upstream over the network. On WSL / behind a
+        # firewall the TLS handshake can hang for the full socket timeout
+        # (30s), and doing that synchronously inside *any* panel request used
+        # to make add_account / state / refresh block past the Host's 30s
+        # AbortSignal — the account was already persisted but the UI reported
+        # "导入失败". Run quota refreshes in a single background thread and
+        # return the current snapshot immediately.
+        self._quota_lock = threading.Lock()
+        self._quota_busy = False
 
     # ------------------------------------------------------------ helpers
 
@@ -72,21 +82,39 @@ class Panel:
         return (time.time() - (acc.quota_updated_at or 0)) > minutes * 60
 
     def _refresh_all(self, only_stale: bool = True) -> None:
-        for acc in self.pool.accounts:
-            if not acc.session_valid:
-                continue
-            if only_stale and not self._quota_stale(acc):
-                continue
+        """Refresh quotas off the request path.
+
+        A single daemon thread does the network I/O; concurrent callers are
+        collapsed into one in-flight pass. The request handler never waits for
+        the upstream, so an unreachable upstream degrades to "quota unknown"
+        instead of a 30s hang that looks like an import failure.
+        """
+        with self._quota_lock:
+            if self._quota_busy:
+                return
+            self._quota_busy = True
+
+        def _work() -> None:
             try:
-                self.pool.refresh_quota(acc)
-            except Exception as exc:                     # noqa: BLE001
-                self.log(f"[panel] 刷新 {acc.name} 额度失败：{exc}")
-        self.pool.save()
+                for acc in self.pool.accounts:
+                    if not acc.session_valid:
+                        continue
+                    if only_stale and not self._quota_stale(acc):
+                        continue
+                    try:
+                        self.pool.refresh_quota(acc)
+                    except Exception as exc:             # noqa: BLE001
+                        self.log(f"[panel] 刷新 {acc.name} 额度失败：{exc}")
+                self.pool.save()
+            finally:
+                with self._quota_lock:
+                    self._quota_busy = False
 
-    # --------------------------------------------------------------- state
+        threading.Thread(target=_work, name="panel-quota-refresh",
+                         daemon=True).start()
 
-    def state(self, *, refresh: bool = False) -> Dict[str, Any]:
-        self._refresh_all(only_stale=not refresh)
+    def _state_snapshot(self) -> Dict[str, Any]:
+        """Build the state payload without touching the network."""
         accounts = [self._account_view(a) for a in self.pool.accounts]
 
         # one account can hold two sessions (ours + the client's) — count once
@@ -119,11 +147,16 @@ class Panel:
             "accounts": accounts,
         }
 
+    def state(self, *, refresh: bool = False) -> Dict[str, Any]:
+        """Return a snapshot immediately; trigger quota work in the background."""
+        self._refresh_all(only_stale=not refresh)
+        return self._state_snapshot()
+
     # --------------------------------------------------------------- writes
 
     def refresh(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        self._refresh_all(only_stale=False)
-        return self.state()
+        # Kick off the refresh, but never hold the HTTP request open for it.
+        return self.state(refresh=True)
 
     def add_account(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         name = str(payload.get("name") or "").strip()
@@ -144,8 +177,10 @@ class Panel:
                                   "identity": acc.identity_view()}
         if loginid and password and payload.get("login", True):
             try:
+                # This is an explicit login, so waiting for it is intended;
+                # the quota probe that used to follow is now handled by the
+                # background refresh in state() below.
                 self.pool.ensure_session(acc, force=True)
-                self.pool.refresh_quota(acc)
                 result["logged_in"] = True
                 result["userid"] = acc.userid
             except (AccountError, PoolError) as exc:
@@ -169,7 +204,6 @@ class Panel:
         if payload.get("login") and acc.loginid and acc.password:
             try:
                 self.pool.ensure_session(acc, force=True)
-                self.pool.refresh_quota(acc)
             except (AccountError, PoolError) as exc:
                 self.log(f"[panel] {name} 重新登录失败：{exc}")
             self.pool.save(force=True)
@@ -191,7 +225,6 @@ class Panel:
         result: Dict[str, Any] = {"ok": True, "name": name}
         try:
             self.pool.ensure_session(acc, force=True)
-            self.pool.refresh_quota(acc)
             acc.cooldown_until = 0.0
             result["userid"] = acc.userid
             result["session_days_left"] = acc.days_left

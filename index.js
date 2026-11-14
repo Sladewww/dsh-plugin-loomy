@@ -40,8 +40,13 @@ const DEFAULTS = {
   // 插件启用即自动拉起/接管网关（用户明确要求「重启后总是自动启动」）。
   // 可在面板「设置」里关掉；state.json 不存在时也按此默认值生效。
   autoStart: true,
-  // 桌面客户端登录态扫描根目录；空 = C:\Users\Public\Loomy
+  // 桌面客户端登录态扫描根目录；空 = 按平台自动探测（WSL 走 /mnt/c/...）
   clientRoot: '',
+  // WSL 里直连讯飞上游常因 TLS 握手失败而挂住；填系统代理（如
+  // http://127.0.0.1:7890）可让额度查询走代理。留空 = 直连。
+  proxy: '',
+  // 额度查询的 socket 超时（秒）。保持较短，避免上游不可达时拖慢面板写入。
+  quotaTimeout: 5,
 };
 
 // ---------------------------------------------------------------- utilities
@@ -102,6 +107,11 @@ function writeGatewayConfig(state, key) {
     log_console: true,
     log_requests: true,
     sessions_from_client: true,
+    // WSL 下客户端数据目录是 Windows 盘符的 drvfs 挂载点，Python 侧的
+    // CLIENT_PUBLIC_ROOT 字面量在这里无效，必须显式下发。
+    client_root: String(state.clientRoot || CLIENT_ROOT_DEFAULT),
+    proxy: String(state.proxy || ''),
+    quota_timeout: Number(state.quotaTimeout) || 5,
   };
   const file = join(dir, 'config.json');
   writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
@@ -176,7 +186,28 @@ async function readJsonBody(req) {
 // 派生的临时账号（persist=False，不写回 accounts.json）。这里提供主动扫描 +
 // 一键把选中项持久化为可管理账号的能力。
 
-const CLIENT_ROOT_DEFAULT = 'C:\\Users\\Public\\Loomy';
+/**
+ * 桌面客户端数据根目录。
+ *
+ * Windows 原生: C:\Users\Public\Loomy
+ * WSL:          /mnt/c/Users/Public/Loomy （同一目录经 drvfs 挂载）
+ *
+ * 插件 Host 跑在 WSL 里时，Windows 路径字面量在 POSIX 上根本不存在
+ * （readdirSync('C:\\...') → ENOENT），扫描会静默返回空清单，用户看到
+ * 「未发现客户端登录态文件」并以为导入失败。这里按平台选默认值，并在
+ * WSL 下校验 /mnt/<drive> 确实存在，避免给出一个同样无效的猜测。
+ */
+function defaultClientRoot() {
+  if (process.platform !== 'linux') return 'C:\\Users\\Public\\Loomy';
+  const wslRoot = join('/mnt', 'c', 'Users', 'Public', 'Loomy');
+  try {
+    if (existsSync('/mnt/c')) return wslRoot;
+  } catch { /* ignore */ }
+  // 非 WSL 的 Linux：仍返回 Windows 字面量，让 UI 明确提示用户手动填写。
+  return 'C:\\Users\\Public\\Loomy';
+}
+
+const CLIENT_ROOT_DEFAULT = defaultClientRoot();
 const SESSION_SECONDS = 14 * 24 * 3600;
 
 function maskPhone(v) {
@@ -195,7 +226,7 @@ function maskSession(v) {
  * scanCache 里，通过 token 索引，绝不发给浏览器。
  */
 function scanClientSessions(root) {
-  const base = String(root || CLIENT_ROOT_DEFAULT);
+  const base = String(root || CLIENT_ROOT_DEFAULT).trim();
   const found = [];
   const errors = [];
   let entries = [];
@@ -361,6 +392,9 @@ export function apply(ctx, config) {
       LOOMY_LOG_DIR: join(dataDir(), 'logs'),
       LOOMY_STRATEGY: s.strategy,
       LOOMY_DEFAULT_MODEL: s.defaultModel,
+      LOOMY_PROXY: String(s.proxy || ''),
+      LOOMY_QUOTA_TIMEOUT: String(Number(s.quotaTimeout) || 5),
+      LOOMY_CLIENT_ROOT: String(s.clientRoot || CLIENT_ROOT_DEFAULT),
     };
 
     lastError = '';
@@ -633,7 +667,7 @@ export function apply(ctx, config) {
       }
       case 'GET config': {
         const s = state();
-        return { ok: true, data: { port: s.port, pythonPath: s.pythonPath, strategy: s.strategy, defaultModel: s.defaultModel, providerRoute: s.providerRoute, autoStart: !!s.autoStart, clientRoot: s.clientRoot || '', dataDir: dataDir() } };
+        return { ok: true, data: { port: s.port, pythonPath: s.pythonPath, strategy: s.strategy, defaultModel: s.defaultModel, providerRoute: s.providerRoute, autoStart: !!s.autoStart, clientRoot: s.clientRoot || '', clientRootDefault: CLIENT_ROOT_DEFAULT, proxy: s.proxy || '', quotaTimeout: Number(s.quotaTimeout) || 5, dataDir: dataDir() } };
       }
       case 'POST config': {
         const s = state();
@@ -652,6 +686,12 @@ export function apply(ctx, config) {
         if (body.providerRoute !== undefined) next.providerRoute = String(body.providerRoute || 'loomy').replace(/[^a-zA-Z0-9_-]/g, '-');
         if (body.autoStart !== undefined) next.autoStart = !!body.autoStart;
         if (body.clientRoot !== undefined) next.clientRoot = String(body.clientRoot || '');
+        if (body.proxy !== undefined) next.proxy = String(body.proxy || '');
+        if (body.quotaTimeout !== undefined) {
+          const t = Number(body.quotaTimeout);
+          if (!Number.isFinite(t) || t < 1 || t > 60) return { ok: false, message: '额度查询超时必须是 1–60 秒' };
+          next.quotaTimeout = t;
+        }
         writeState(next);
         const wasRunning = (!!child && child.exitCode === null) || adopted;
         if (wasRunning && (next.port !== s.port || next.strategy !== s.strategy || next.pythonPath !== s.pythonPath)) {
@@ -739,7 +779,26 @@ export function apply(ctx, config) {
             session: entry.session,
             login: false,
           }, 30000);
-          if (!res.ok) { failed.push({ token, name, reason: res.message }); continue; }
+          if (!res.ok) {
+            // 网关是 ThreadingHTTPServer：即使 Host 侧 AbortSignal 先超时，
+            // 请求处理线程仍会继续并把账号写进 accounts.json。直接判 failed
+            // 会造成「UI 报失败、账号其实已导入」的假象（WSL 上上游 SSL
+            // 超时时尤其常见）。回查文件确认真实结果再下结论。
+            let persisted = false;
+            try {
+              const raw = JSON.parse(readFileSync(join(dataDir(), 'accounts.json'), 'utf8'));
+              const list = Array.isArray(raw.accounts) ? raw.accounts : [];
+              persisted = list.some((a) => a && String(a.session) === entry.session);
+            } catch { /* 读不到就按失败处理 */ }
+            if (persisted) {
+              existingNames.add(name);
+              existingSessions.add(entry.session);
+              imported.push({ token, name, note: '网关响应超时，但账号已写入账号池' });
+            } else {
+              failed.push({ token, name, reason: res.message });
+            }
+            continue;
+          }
           existingNames.add(name);
           existingSessions.add(entry.session);
           imported.push({ token, name });

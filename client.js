@@ -454,10 +454,15 @@ window.__ModuleLoader__.load({
                 h('input', {
                   style: { ...S.input, flex: 1, minWidth: 260 },
                   value: clientRootDraft,
-                  placeholder: '留空 = C:\\Users\\Public\\Loomy',
+                  placeholder: '留空 = ' + (config && config.clientRootDefault ? config.clientRootDefault : 'C:\\Users\\Public\\Loomy'),
                   onChange: (e) => setClientRootDraft(e.target.value),
                 })),
               h('span', { key: 'hint', style: S.hint }, clientScan ? `上次扫描：${clientScan.root}` : '点「扫描客户端」读取 auth-session.json')),
+            h('div', { key: 'root-actions', style: S.row },
+              btn('scan-root-save', '保存为默认目录', () =>
+                act('save-root', () => post('config', { ...(cfgDraft || {}), clientRoot: clientRootDraft })),
+                { disabled: !clientRootDraft }),
+              h('span', { key: 'hint', style: S.hint }, 'WSL 下默认已自动指向 /mnt/c/Users/Public/Loomy；如客户端装在其他盘，请填路径并保存。')),
             h('div', { key: 'notice', style: S.hint },
               '客户端只保留最后登录的一个账号：登录第二个会覆盖 auth-session.json。要导入多个账号，请逐个登录并分别扫描导入；已导入的持久账号不会因覆盖而丢失。'),
             errors.length
@@ -567,6 +572,10 @@ window.__ModuleLoader__.load({
                 h('input', { style: S.input, value: d.defaultModel || '', onChange: (e) => set('defaultModel', e.target.value) })),
               h('label', { style: S.metaItem, key: 'route' }, 'DSH 路由 ID',
                 h('input', { style: S.input, value: d.providerRoute || '', onChange: (e) => set('providerRoute', e.target.value) })),
+              h('label', { style: S.metaItem, key: 'proxy' }, '上游代理（WSL 常需要）',
+                h('input', { style: S.input, value: d.proxy || '', placeholder: '留空直连，如 http://127.0.0.1:7890', onChange: (e) => set('proxy', e.target.value) })),
+              h('label', { style: S.metaItem, key: 'quotaTimeout' }, '额度查询超时（秒）',
+                h('input', { style: S.input, type: 'number', min: 1, max: 60, value: d.quotaTimeout === undefined ? 5 : d.quotaTimeout, onChange: (e) => set('quotaTimeout', e.target.value) })),
               h('label', { style: S.metaItem, key: 'auto' }, '自动启动',
                 h('select', { style: S.select, value: String(!!d.autoStart), onChange: (e) => set('autoStart', e.target.value === 'true') },
                   h('option', { value: 'false' }, '否'), h('option', { value: 'true' }, '是')))),
