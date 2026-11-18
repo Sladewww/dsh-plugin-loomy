@@ -68,11 +68,14 @@ window.__ModuleLoader__.load({
       header: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
       h1: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: 1.4, color: C.primary },
       sub: { margin: 0, color: C.tertiary, fontSize: 12 },
-      tabs: { display: 'flex', gap: 4, borderBottom: '1px solid ' + C.border, paddingBottom: 0 },
+      // 不给整条 tab 栏画底部分隔线：C.border 在没有 --dsw-alias-border-l1 的
+      // 宿主里会 fallback 成 currentColor，看起来就是一条突兀的白线。
+      // 当前页指示改由选中项自己的 2px brand 下划线承担。
+      tabs: { display: 'flex', gap: 4, paddingBottom: 0 },
       tab: {
         font: 'inherit', fontSize: 13, padding: '6px 14px', border: 'none',
         background: 'transparent', color: C.secondary, cursor: 'pointer',
-        borderBottom: '2px solid transparent', marginBottom: -1, borderRadius: '5px 5px 0 0',
+        borderBottom: '2px solid transparent', borderRadius: '5px 5px 0 0',
       },
       tabOn: { color: C.primary, background: C.panel, borderBottomColor: C.brand, fontWeight: 600 },
       card: {
