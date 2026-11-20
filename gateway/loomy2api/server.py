@@ -206,6 +206,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):             # silence default access log
         return
 
+    def _log_upstream_body(self, gw, tag: str, acc_name: str, model: str,
+                           status: int, data: bytes) -> None:
+        """Log the upstream error body for a failed (non-200) call.
+
+        Without this the reason an upstream rejects a request (400 之类) is
+        invisible: the retry loop only logs the status code.  Body is logged
+        truncated; JSON is re-dumped compact when parseable for readability.
+        """
+        text = data[:500].decode("utf-8", "replace").strip()
+        if not text:
+            text = "(empty body)"
+        try:
+            obj = json.loads(data.decode("utf-8"))
+            if isinstance(obj, dict):
+                err = obj.get("error")
+                if isinstance(err, dict):
+                    text = json.dumps(err, ensure_ascii=False)[:500]
+        except Exception:                           # noqa: BLE001
+            pass
+        gw.log(f"[{tag}] {acc_name} {model} http={status} 响应体: {text}")
+
     def _json(self, status: int, obj: Any, extra: Optional[dict] = None) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -562,6 +583,7 @@ class Handler(BaseHTTPRequestHandler):
                        f"http=200 {human_usage(usage)}")
                 return self._json(200, obj)
             last = (status, data)
+            self._log_upstream_body(gw, "call", acc.name, model, status, data)
             if status in self.ACCOUNT_FAULT:
                 gw.log(f"[call] {acc.name} {model} http={status} → 账号问题，换账号重试")
                 gw.pool.report_failure(acc, status,
@@ -597,6 +619,7 @@ class Handler(BaseHTTPRequestHandler):
                 break
             data = resp.read()
             conn.close()
+            self._log_upstream_body(gw, "call", acc.name, model, resp.status, data)
             if resp.status in self.ACCOUNT_FAULT:
                 gw.log(f"[call] {acc.name} {model} stream http={resp.status}"
                        f" → 账号问题，换账号重试")
@@ -685,6 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                        f"http=200 {human_usage(usage)}")
                 return self._json(200, anth.openai_to_anthropic(obj, model))
             last = (status, data)
+            self._log_upstream_body(gw, "messages", acc.name, model, status, data)
             if status in self.ACCOUNT_FAULT:
                 gw.pool.report_failure(acc, status,
                                        data[:200].decode("utf-8", "replace"))
@@ -717,6 +741,7 @@ class Handler(BaseHTTPRequestHandler):
                 break
             data = resp.read()
             conn.close()
+            self._log_upstream_body(gw, "messages", acc.name, model, resp.status, data)
             if resp.status in self.ACCOUNT_FAULT:
                 gw.pool.report_failure(acc, resp.status,
                                        data[:200].decode("utf-8", "replace"))
