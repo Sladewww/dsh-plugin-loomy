@@ -76,8 +76,14 @@ window.__ModuleLoader__.load({
         font: 'inherit', fontSize: 13, padding: '6px 14px', border: 'none',
         background: 'transparent', color: C.secondary, cursor: 'pointer',
         borderBottom: '2px solid transparent', borderRadius: '5px 5px 0 0',
+        // tabOn 覆盖的每个键都必须在这里显式出现：宿主的 slot 渲染层对 style
+        // 做逐键应用、不清除旧键，切换 tab 时只靠"覆盖"生效，靠"删除"会残留
+        // （实测表现为旧 tab 的 brand 下划线切不走）。
+        borderBottomColor: 'transparent', fontWeight: 400,
       },
       tabOn: { color: C.primary, background: C.panel, borderBottomColor: C.brand, fontWeight: 600 },
+      // 未选中态：显式覆盖 tabOn 可能残留在 DOM 上的键（不依赖 React 删除键）。
+      tabOff: { color: C.secondary, background: 'transparent', borderBottomColor: 'transparent', fontWeight: 400 },
       card: {
         border: '1px solid ' + C.border, borderRadius: 8, background: C.panel,
         padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10,
@@ -624,7 +630,8 @@ window.__ModuleLoader__.load({
         settings: settingsView,
       };
       const TabButton = (key, label) => h('button', {
-        key, type: 'button', style: { ...S.tab, ...(tab === key ? S.tabOn : {}) },
+        key, type: 'button',
+        style: { ...S.tab, ...(tab === key ? S.tabOn : S.tabOff) },
         onClick: () => setTab(key),
       }, label);
 
